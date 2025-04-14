@@ -1,103 +1,225 @@
-#include <unistd.h>     // fork, execve, chdir, dup, dup2, pipe, close
-#include <sys/wait.h>   // waitpid
-#include <stdlib.h>     // malloc, free, exit
-#include <stdio.h>      // perror
-#include <string.h>     // strcmp, strncmp
-#include <signal.h>     // signal, kill
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/wait.h>
 
-// Token identifiers
-# define CMD 0
-# define PIPE 1
-# define BREAK 2
+#define STDIN 0
+#define STDOUT 1
+#define STDERR 2
 
-// Error messages
-# define ERR_FATAL "error: fatal\n"
-# define ERR_EXEC "error: cannot execute %s\n"
-# define ERR_CD_ARGS "error: cd: bad arguments\n"
-# define ERR_CD_DIR "error: cd: cannot change directory to %s\n"
+int exec_recursive(char **argv, int start, int in_fd, char **env);
 
-typedef struct	s_cmd
+// Error handling functions
+void fatal_error(void)
 {
-	char    **args;
-	int     type;
-	int     pipe_fd[2];
-} t_cmd;
-
-int	is_pipe(char* str)
-{
-	if (strncmp(str, "|", 2) == 0)
-		return (1);
-	else
-		return (0);
+    write(STDERR, "error: fatal\n", 13);
+    exit(1);
 }
 
-int	is_colon(char* str)
+void exec_error(char *str)
 {
-	if (strncmp(str, ";", 2) == 0)
-		return (1);
-	else
-		return (0);
+    write(STDERR, "error: cannot execute ", 22);
+    write(STDERR, str, strlen(str));
+    write(STDERR, "\n", 1);
 }
 
-void	print_token(char **argv)
+void cd_arg_error(void)
 {
-	int	i;
-
-	i = 1;
-	while (argv[i])
-	{
-		if(is_pipe(argv[i]))
-			printf("-[PIP]-");
-		else if (is_colon(argv[i]))
-			printf("-[BRK]\n");
-		else
-			printf("-[%s]-", argv[i]);
-		i++;
-	}
-	printf("\n");
+    write(STDERR, "error: cd: bad arguments\n", 25);
 }
 
-int	count_commands(char **argv)
+void cd_path_error(char *path)
 {
-	int i = 1;
-	int count = 0;
-	
-	while (argv[i])
-	{
-		if (!is_pipe(argv[i]) && !is_colon(argv[i]))
-		{
-			count++;
-			while (argv[i] && !is_pipe(argv[i]) && !is_colon(argv[i]))
-				i++;
-		}
-		else
-			i++;
-	}
-	return (count);
+    write(STDERR, "error: cd: cannot change directory to ", 38);
+    write(STDERR, path, strlen(path));
+    write(STDERR, "\n", 1);
 }
 
-void free_commands(t_cmd *cmds)
+// Helper functions
+int is_pipe(char *str)
 {
-    int i = 0;
-    
-    while (cmds[i].args)
+    return (strcmp(str, "|") == 0);
+}
+
+int is_break(char *str)
+{
+    return (strcmp(str, ";") == 0);
+}
+
+int is_cd(char *str)
+{
+    return (strcmp(str, "cd") == 0);
+}
+
+// Execute built-in cd command
+int exec_cd(char **args)
+{
+    if (!args[1] || args[2])
     {
-        free(cmds[i].args);
-        i++;
+        cd_arg_error();
+        return 1;
     }
-    free(cmds);
+    
+    if (chdir(args[1]) != 0)
+    {
+        cd_path_error(args[1]);
+        return 1;
+    }
+    return 0;
 }
 
-int	main(int argc, char **argv, char **env)
+// Find the end of the current command (pipe or break or end)
+int find_cmd_end(char **argv, int start)
 {
-	//t_cmd	*cmds;
-	//int		status;
-	(void) env;
+    int i = start;
+    
+    while (argv[i] && !is_pipe(argv[i]) && !is_break(argv[i]))
+        i++;
+    
+    return i;
+}
 
-	if (argc < 2)
-		return (write(2, ERR_FATAL, strlen(ERR_FATAL)), 1);
-	print_token(argv);
-	printf("Count_command: %d\n",count_commands(argv));
+// Prepare command arguments
+char **prepare_cmd_args(char **argv, int start, int end)
+{
+    char **cmd = malloc(sizeof(char *) * (end - start + 1));
+    if (!cmd)
+        fatal_error();
+        
+    for (int i = 0; i < end - start; i++)
+        cmd[i] = argv[start + i];
+    cmd[end - start] = NULL;
+    
+    return cmd;
+}
 
-	return (0);
+// Setup input/output redirections
+void setup_redirections(int in_fd, int *pipe_fd, int need_pipe)
+{
+    // Setup input redirection
+    if (in_fd != STDIN)
+    {
+        if (dup2(in_fd, STDIN) < 0)
+            fatal_error();
+        close(in_fd);
+    }
+    
+    // Setup output redirection for pipes
+    if (need_pipe)
+    {
+        if (dup2(pipe_fd[1], STDOUT) < 0)
+            fatal_error();
+        close(pipe_fd[0]);
+        close(pipe_fd[1]);
+    }
+}
+
+// Handle child process execution
+void child_process(char **argv, int start, int end, int in_fd, int *pipe_fd, int need_pipe, char **env)
+{
+    // Setup redirections
+    setup_redirections(in_fd, pipe_fd, need_pipe);
+    
+    // Prepare command arguments
+    char **cmd = prepare_cmd_args(argv, start, end);
+    
+    // Execute command
+    execve(cmd[0], cmd, env);
+    exec_error(cmd[0]);
+    free(cmd);
+    exit(1);
+}
+
+// Handle parent process logic and recursion
+int parent_process(char **argv, int end, int in_fd, int *pipe_fd, int need_pipe, pid_t pid, char **env)
+{
+    int status = 0;
+    
+    // Close unused file descriptors
+    if (in_fd != STDIN)
+        close(in_fd);
+        
+    if (need_pipe)
+        close(pipe_fd[1]);
+    
+    // If this is a pipe, recursively execute the next command
+    if (need_pipe)
+    {
+        status = exec_recursive(argv, end + 1, pipe_fd[0], env);
+    }
+    else
+    {
+        // Wait for the child process
+        waitpid(pid, &status, 0);
+        
+        // If we've reached a semicolon, recursively execute the next command set
+        if (argv[end] && is_break(argv[end]))
+            status = exec_recursive(argv, end + 1, STDIN, env);
+    }
+    
+    return WEXITSTATUS(status);
+}
+
+// Execute a command recursively
+int exec_recursive(char **argv, int start, int in_fd, char **env)
+{
+    int end = find_cmd_end(argv, start);
+    int status = 0;
+    int pipe_fd[2];
+    pid_t pid;
+    
+    // Handle empty command
+    if (start >= end)
+        return 0;
+        
+    // Handle built-in cd
+    if (is_cd(argv[start]))
+    {
+        // Extract cd arguments
+        char *cd_args[3] = {argv[start], end - start > 1 ? argv[start + 1] : NULL, NULL};
+        return exec_cd(cd_args);
+    }
+    
+    // Check if we need to pipe
+    int need_pipe = argv[end] && is_pipe(argv[end]);
+    
+    // Create pipe if needed
+    if (need_pipe)
+    {
+        if (pipe(pipe_fd) != 0)
+            fatal_error();
+    }
+    
+    // Fork process
+    pid = fork();
+    if (pid < 0)
+        fatal_error();
+    
+    if (pid == 0) // Child process
+    {
+        child_process(argv, start, end, in_fd, pipe_fd, need_pipe, env);
+    }
+    else // Parent process
+    {
+        return parent_process(argv, end, in_fd, pipe_fd, need_pipe, pid, env);
+    }
+    
+    return status; // This point is never reached but avoids compiler warning
+}
+
+int main(int ac, char **av, char **env)
+{
+    int status;
+    
+    if (ac < 2)
+        return 0;
+    
+    status = exec_recursive(av + 1, 0, STDIN, env);
+    
+    // Wait for any remaining processes
+    while (waitpid(-1, NULL, 0) > 0)
+        ;
+        
+    return status;
 }
