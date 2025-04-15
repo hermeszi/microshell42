@@ -9,7 +9,7 @@ CFLAGS = -Wall -Wextra -Werror -g
 OBJ_DIR = obj
 
 # Source and header files
-SRCS = main.c
+SRCS = microshell.c
 HEADERS = microshell.h
 
 # Object files
