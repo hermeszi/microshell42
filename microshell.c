@@ -125,15 +125,20 @@ int parent(char **av, int end, pid_t pid, int in_fd, int *pipe_fd, int got_pipe,
 }
 int	handle_cd(char **av, int start, int end, char **env)
 {
+	int	status = 0;
+
 	if (end - start != 2)
 	{
 		ft_putstr("error: cd: bad arguments", NULL);
-		return (1);
+		status = 1;
 	}
-	if (chdir(av[start + 1]) != 0)
+	else
 	{
-		ft_putstr("error: cd: cannot change directory to ", av[start + 1]);
-		return (1);
+		if (chdir(av[start + 1]) != 0)
+		{
+			ft_putstr("error: cd: cannot change directory to ", av[start + 1]);
+			status = 1;
+		}
 	}
 	if (av[end])
 	{
@@ -142,17 +147,19 @@ int	handle_cd(char **av, int start, int end, char **env)
 			return (run(av, end + 1, STDIN, env));
 		}
 	}
-	return (0);
+	return (status);
 }
 
 int	run(char **av, int start, int in_fd, char **env)
 {
 	int		pipe_fd[2];
 	pid_t	pid;
-	int		status = 0;
-	int		end = find_end(av, start);
+	int		end;
 	int		got_pipe = 0;
 
+	while (av[start] && is_break(av[start]))
+		start++;
+	end	= find_end(av, start);
 	if(start >= end)
 		return (0);
 
@@ -188,10 +195,10 @@ int	run(char **av, int start, int in_fd, char **env)
 	//parent
 	else
 	{
-		status = parent(av, end, pid, in_fd, pipe_fd, got_pipe, env);
+		return(parent(av, end, pid, in_fd, pipe_fd, got_pipe, env));
 	}
 
-	return (status);
+	return (1);
 	
 }
 
@@ -202,7 +209,7 @@ int	main (int ac, char **av, char **env)
 	if (ac < 2)
 		return (1);
 	status = run(av + 1, 0, STDIN, env);
-	while (waitpid(-1, &status, 0) > 0)
+	while (waitpid(-1, NULL, 0) > 0)
 	;
 
 	return (status);
