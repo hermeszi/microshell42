@@ -157,8 +157,11 @@ int	run(char **av, int start, int in_fd, char **env)
 	int		end;
 	int		got_pipe = 0;
 
+	//move start
 	while (av[start] && is_break(av[start]))
 		start++;
+
+	//find end
 	end	= find_end(av, start);
 	if(start >= end)
 		return (0);
