@@ -1,4 +1,4 @@
-/*#include <stdlib.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <string.h>
@@ -6,11 +6,13 @@
 #define STDIN 0
 #define STDOUT 1
 #define STDERR 2
-*/
 
-//int	run(char **av, int start, int in_fd, char **env);
 
-#include "microshell.h"
+int	run(char **av, int start, int in_fd, char **env);
+
+//#include "microshell.h"
+//./microshell ";" ";" /bin/pwd ";" echo NO ";" /bin/ls "|" /bin/grep micro "|" /bin/wc -l ";" cd .. ";" /bin/pwd ";" ";" 
+
 
 void	ft_putstr(char* str, char *arg)
 {
@@ -25,7 +27,6 @@ void	ft_putstr(char* str, char *arg)
 			write(STDERR, arg++, 1);
 	}
 	write (STDERR, "\n", 1);
-
 }
 void	fatal_error(void)
 {
@@ -45,48 +46,38 @@ int	is_cd(char* str)
 	return (strcmp(str, "cd") == 0);
 }
 
-int	find_end(char **av, int start)
-{
-	int	i = start;
-
-	while (av[i] && !is_pipe(av[i]) && ! is_break(av[i]))
-	{
-		i++;
-	}
-
-	return (i);
-}
 void	redirection(int got_pipe, int in_fd, int *pipe_fd)
 {
 	if(in_fd != STDIN)
 	{
 		if (dup2(in_fd, STDIN) < 0)
 			fatal_error();
-		close(in_fd);
+		if (close(in_fd) != 0)
+			fatal_error();
 	}
 	if (got_pipe)
 	{
 		if (dup2(pipe_fd[1], STDOUT) < 0)
 			fatal_error();
-		close(pipe_fd[0]);
-		close(pipe_fd[1]);
+		if (close(pipe_fd[0]) != 0 || close(pipe_fd[1]) != 0 )
+			fatal_error();
 	}
 	
 }
 char	**parse_arg(char **av, int start, int end)
 {
-	int	stop = end - start;
+	int	len = end - start;
 	int	i;
 	char **cmd;
 
-	if (stop <= 0)
+	if (len <= 0)
 		return (NULL);
 	
-	cmd = malloc(sizeof(char *) * (stop + 1));
+	cmd = malloc(sizeof(char *) * (len + 1));
 
-	for (i = 0; i < stop; i++)
+	for (i = 0; i < len; i++)
 		cmd[i] = av[start + i];
-	cmd[stop] = NULL;
+	cmd[len] = NULL;
 
 	return (cmd);
 }
@@ -108,20 +99,28 @@ int parent(char **av, int end, pid_t pid, int in_fd, int *pipe_fd, int got_pipe,
 {
 	int	status;
 
+	//close previous pipe fd
 	if (in_fd != STDIN)
-		close(in_fd);
-	if (got_pipe)
 	{
-		close(pipe_fd[1]);
+		if (close(in_fd) != 0)
+			fatal_error();
+	}
+	
+	if (got_pipe) //program continues with pipe
+	{
+		if (close(pipe_fd[1]) != 0)
+			fatal_error();
 		status = run(av, end + 1, pipe_fd[0], env);
 	}
 	else
 	{
 		waitpid(pid, &status, 0);
-		if (av[end] && is_break(av[end]))
+		if (av[end] && is_break(av[end])) //program continues with break
 			status = run(av, end + 1, STDIN, env);
 	}
-	return (WEXITSTATUS(status));
+	if (WIFEXITED(status))
+		return (WEXITSTATUS(status));
+	return (1);
 }
 int	handle_cd(char **av, int start, int end, char **env)
 {
@@ -162,41 +161,36 @@ int	run(char **av, int start, int in_fd, char **env)
 		start++;
 
 	//find end
-	end	= find_end(av, start);
-	if(start >= end)
+	end = start;
+	while (av[end] && !is_pipe(av[end]) && !is_break(av[end]))
+		end++;
+	
+	//check for end of program
+	if(!av[start] || start >= end)
 		return (0);
 
 	//check cd
 	if (av[start] && is_cd(av[start]))
-	{
 		return(handle_cd(av, start, end, env));
-	}
 
-	//check pipe
+	//check for pipe
 	got_pipe = av[end] && is_pipe(av[end]);
-	if (got_pipe)
+	if (got_pipe) //make pipe
 	{
 		if (pipe(pipe_fd) != 0)
-		{
 			fatal_error();
-			return (1);
-		}
 	}
+
 	//fork
 	pid = fork();
 	if (pid < 0)
-	{
 		fatal_error();
-		return (1);
-	}
 	
-	//child
-	if (pid == 0)
+	if (pid == 0) //child
 	{
 		child(av, start, end, in_fd, pipe_fd, got_pipe, env);
 	}
-	//parent
-	else
+	else //parent
 	{
 		return(parent(av, end, pid, in_fd, pipe_fd, got_pipe, env));
 	}
@@ -209,9 +203,13 @@ int	main (int ac, char **av, char **env)
 {
 	int status = 0;
 
+	//check arg count
 	if (ac < 2)
 		return (1);
+	
 	status = run(av + 1, 0, STDIN, env);
+	
+	//wait for zombie
 	while (waitpid(-1, NULL, 0) > 0)
 	;
 
