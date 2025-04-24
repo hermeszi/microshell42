@@ -74,7 +74,10 @@ char	**parse_arg(char **av, int start, int end)
 		return (NULL);
 	
 	cmd = malloc(sizeof(char *) * (len + 1));
+	if(!cmd)
+		return (NULL);
 
+	//arg_dup
 	for (i = 0; i < len; i++)
 		cmd[i] = av[start + i];
 	cmd[len] = NULL;
